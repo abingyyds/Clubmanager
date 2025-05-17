@@ -11,6 +11,8 @@ import {TokenBasedAccess, IMembershipQuery} from "./TokenBasedAccess.sol";  // I
 error CMQNotAuthorized();
 error CMQInvalidDomain(string domainName);
 
+enum TokenType { ERC20, ERC721, ERC1155, CROSSCHAIN }
+
 /**
  * @title ClubMembershipQuery
  * @dev Provides query functions for club memberships
@@ -47,6 +49,18 @@ contract ClubMembershipQuery {
         uint256 membershipPrice;
         uint256 quarterPrice;
         uint256 yearPrice;
+        
+        // 修改为数组结构
+        TokenRequirement[] tokenRequirements;
+    }
+    
+    struct TokenRequirement {
+        address tokenAddress;
+        uint256 requiredAmount;
+        bool isNFT;
+        uint8 tokenType;  // 对应TokenType枚举
+        string chainId;
+        string symbol;
     }
     
     constructor(address clubManager) {
@@ -258,21 +272,26 @@ contract ClubMembershipQuery {
         conditions.isNFT = false;
         conditions.hasTokenRequirement = false;
         
-        if (token != address(0)) {
-            // Modify: Use getTokenGateDetails method to get the first token gate of index 0
-            try _tokenAccess.getTokenGateDetails(standardized, 0) returns (
+        uint256 gateCount = _tokenAccess.getTokenGateCount(standardized);
+        for (uint256 i = 0; i < gateCount; i++) {
+            try _tokenAccess.getTokenGateDetails(standardized, i) returns (
                 address tokenAddress, 
-                uint256 threshold, 
-                uint256, 
-                uint8,
-                string memory,
-                string memory,
-                string memory
+                uint256 threshold,
+                uint256 tokenId,
+                uint8 tokenType,
+                string memory chainId,
+                string memory tokenSymbol,
+                string memory crossChainAddress
             ) {
-                conditions.tokenAddress = tokenAddress;
-                conditions.requiredTokenAmount = threshold;
-                conditions.isNFT = false; // TokenBasedAccess does not support NFT, assuming all are ERC20
-                conditions.hasTokenRequirement = (tokenAddress != address(0));
+                // 将每个门槛添加到数组中
+                conditions.tokenRequirements.push(TokenRequirement({
+                    tokenAddress: tokenAddress,
+                    requiredAmount: threshold,
+                    isNFT: (tokenType == 1 || tokenType == 2), // ERC721或ERC1155
+                    tokenType: tokenType,
+                    chainId: chainId,
+                    symbol: tokenSymbol
+                }));
             } catch {}
         }
         
@@ -351,9 +370,9 @@ contract ClubMembershipQuery {
     }
     
     /**
-     * @dev Update hasMembership method, according to Web3 concept, once become member, always member
+     * @dev Return whether the user is CURRENTLY an active member (considering expiration)
      */
-    function hasMembership(string memory domainName, address account) public view returns (bool) {
+    function hasActiveMembership(string memory domainName, address account) public view returns (bool) {
         string memory standardized = standardizeDomainName(domainName);
         if (!_isDomainValid(standardized)) return false;
         
@@ -362,35 +381,21 @@ contract ClubMembershipQuery {
             return true;
         }
         
-        // Second case: Through temporary membership contract
-        try _tempMembership.hasMembership(standardized, account) returns (bool result) {
+        // Second case: Through temporary membership contract - MODIFIED
+        try _tempMembership.isMembershipActive(standardized, account) returns (bool result) {
             if (result) return true;
         } catch {
             // Error handling: Continue to check other contracts  
         }
         
         // Third case: Through token access contract
-        try _tokenAccess.hasAccessByDomain(standardized, account) returns (bool result) {
-            if (result) return true;
-        } catch {
-            // Error handling: Continue
-        }
-        
-        // Fourth case: Through direct clubManager, with highest priority
-        try _clubManager.isMember(standardized, account) returns (bool result) {
+        try _tokenAccess.hasActiveMembership(standardized, account) returns (bool result) {
             if (result) return true;
         } catch {
             // Error handling: Continue
         }
         
         return false;
-    }
-    
-    /**
-     * @dev Always return the same result as hasMembership, because according to Web3 concept, member qualification is permanent
-     */
-    function hasActiveMembership(string memory domainName, address account) public view returns (bool) {
-        return hasMembership(domainName, account);
     }
     
     /**
@@ -420,7 +425,7 @@ contract ClubMembershipQuery {
      * @dev Internal function to check membership status
      * @param user User address
      * @param domainName Domain name of the club
-     * @return memberStatus Whether is a member
+     * @return memberStatus Whether is a member that is CURRENTLY ACTIVE
      * @return expirationDate Expiration date (0 indicates permanent or token-based)
      * @return membershipType Membership type
      */
@@ -438,15 +443,26 @@ contract ClubMembershipQuery {
             return (true, 0, membershipType);
         }
         
-        // Check temporary membership
-        try _tempMembership.hasActiveMembership(standardized, user) returns (bool result) {
-            isTemporary = result;
-            if (isTemporary) {
+        // Check temporary membership - MODIFIED
+        try _tempMembership.isMembershipActive(standardized, user) returns (bool active) {
+            // 使用isMembershipActive检查是否临时会员且在有效期内
+            if (active) {
                 try _tempMembership.getMembershipExpiry(standardized, user) returns (uint256 _expiry) {
                     expiry = _expiry;
                 } catch {}
                 membershipType = "temporary";
                 return (true, expiry, membershipType);
+            } else {
+                // 如果不活跃但曾是会员，获取过期时间用于显示
+                try _tempMembership.hasMembership(standardized, user) returns (bool wasMember) {
+                    if (wasMember) {
+                        try _tempMembership.getMembershipExpiry(standardized, user) returns (uint256 _expiry) {
+                            expiry = _expiry;
+                        } catch {}
+                        membershipType = "temporary-expired";
+                        return (false, expiry, membershipType); // 这里返回false表示不再活跃
+                    }
+                } catch {}
             }
         } catch {}
         

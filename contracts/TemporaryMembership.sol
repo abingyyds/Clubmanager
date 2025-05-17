@@ -467,10 +467,16 @@ contract TemporaryMembership is AccessControl, Pausable, ReentrancyGuard, Ownabl
         ClubData storage club = _clubs[domainName];
         MemberData storage memberData = _members[domainName][member];
         
+        uint256 returnTokenId;
+        
         // If already a member, extend membership duration
         if (memberData.isMember && memberData.expiryTime > block.timestamp) {
             // Start extension from current expiry time
             memberData.expiryTime = memberData.expiryTime + (expiryTime - block.timestamp);
+            returnTokenId = memberData.membershipId;
+            
+            // Emit extension event
+            emit Membership(domainName, member, memberData.membershipId, price, memberData.expiryTime, "extend");
         } else {
             // New member or expired member
             // Generate member ID
@@ -496,17 +502,14 @@ contract TemporaryMembership is AccessControl, Pausable, ReentrancyGuard, Ownabl
             // Emit event
             emit Membership(domainName, member, tokenId, price, expiryTime, "mint");
             
-            return tokenId;
+            returnTokenId = tokenId;
         }
         
-        // Transfer to receiver
+        // 确保所有路径都会执行转账
         (bool sent, ) = club.receiver.call{value: price}("");
         if (!sent) revert TM5();
         
-        // Emit extension event
-        emit Membership(domainName, member, memberData.membershipId, price, memberData.expiryTime, "extend");
-        
-        return memberData.membershipId;
+        return returnTokenId;
     }
     
     /**
@@ -596,11 +599,12 @@ contract TemporaryMembership is AccessControl, Pausable, ReentrancyGuard, Ownabl
     }
     
     /**
-     * @dev Check active membership - following Web3 spirit, once become member always valid
+     * @dev Check active membership
      */
     function hasActiveMembership(string memory domainName, address account) public view clubInitialized(domainName) returns (bool) {
-        // Ignore expiry time, once become member always valid
-        return hasMembership(domainName, account);
+        string memory standardized = standardizeDomainName(domainName);
+        MemberData storage data = _members[standardized][account];
+        return data.isMember && data.expiryTime > block.timestamp;
     }
     
     /**

@@ -18,7 +18,7 @@ interface IWeb3ClubRegistry {
     function isRegistered(string memory name) external view returns (bool);
 }
 
-interface IWeb3ClubNFT is IERC71 {
+interface IWeb3ClubNFT is IERC721 {
     function getDomainName(uint256 tokenId) external view returns (string memory);
     function ownerOf(uint256 tokenId) external view returns (address);
     function getTokenId(string memory domainName) external view returns (uint256);
@@ -90,6 +90,10 @@ interface IClubPassFactory {
 interface IClubManager {
     function updateMembership(address user, string memory domainName, bool status) external returns (bool);
     function recordClubPassCollection(string memory domainName, address collectionAddress) external;
+}
+
+interface ClubPassCard {
+    function updateAdmin(address newAdmin) external;
 }
 
 contract ClubManager is Ownable, Pausable, IERC721Receiver {
@@ -420,8 +424,13 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
             try IMembershipContract(tokenAccessAddr).updateClubAdmin(standardized, newAdmin) {} catch {}
         }
         
-        // Keep permanent membership contract address, ensuring it cannot be changed
+        // 添加此部分：更新永久会员证合约的管理员
         address passCollection = _clubPassCollections[standardized];
+        if (passCollection != address(0)) {
+            try ClubPassCard(passCollection).updateAdmin(newAdmin) {} catch {}
+        }
+        
+        // Keep permanent membership contract address, ensuring it cannot be changed
         if (passCollection != address(0)) {
             emit ClubPassCollectionRegistered(standardized, passCollection);
         }
