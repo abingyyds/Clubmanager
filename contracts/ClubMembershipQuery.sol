@@ -246,8 +246,8 @@ contract ClubMembershipQuery {
         conditions.clubName = standardized;
         conditions.clubOwner = _clubManager.getClubAdmin(standardized);
         
-        // Get shared contracts
-        (address perm, address temp, address token) = _clubManager.getClubContracts(standardized);
+        // Get shared contracts - 只获取需要使用的两个地址
+        (address perm, address temp,) = _clubManager.getClubContracts(standardized);
         
         // Permanent membership information
         address passContract = getClubPassAddress(standardized);
@@ -272,27 +272,41 @@ contract ClubMembershipQuery {
         conditions.isNFT = false;
         conditions.hasTokenRequirement = false;
         
+        // 获取总门槛数量
         uint256 gateCount = _tokenAccess.getTokenGateCount(standardized);
+        
+        // 创建临时数组来存储有效的TokenRequirement
+        TokenRequirement[] memory tempRequirements = new TokenRequirement[](gateCount);
+        uint256 validCount = 0;
+        
+        // 填充临时数组
         for (uint256 i = 0; i < gateCount; i++) {
             try _tokenAccess.getTokenGateDetails(standardized, i) returns (
                 address tokenAddress, 
                 uint256 threshold,
-                uint256 tokenId,
+                uint256, // 省略变量名
                 uint8 tokenType,
                 string memory chainId,
                 string memory tokenSymbol,
-                string memory crossChainAddress
+                string memory // 省略变量名
             ) {
-                // 将每个门槛添加到数组中
-                conditions.tokenRequirements.push(TokenRequirement({
+                // 使用索引赋值而不是push
+                tempRequirements[validCount] = TokenRequirement({
                     tokenAddress: tokenAddress,
                     requiredAmount: threshold,
                     isNFT: (tokenType == 1 || tokenType == 2), // ERC721或ERC1155
                     tokenType: tokenType,
                     chainId: chainId,
                     symbol: tokenSymbol
-                }));
+                });
+                validCount++;
             } catch {}
+        }
+        
+        // 创建确切大小的最终数组
+        conditions.tokenRequirements = new TokenRequirement[](validCount);
+        for (uint256 i = 0; i < validCount; i++) {
+            conditions.tokenRequirements[i] = tempRequirements[i];
         }
         
         return conditions;
@@ -432,7 +446,6 @@ contract ClubMembershipQuery {
     function _checkMembership(address user, string memory domainName) internal view returns (bool memberStatus, uint256 expirationDate, string memory membershipType) {
         string memory standardized = standardizeDomainName(domainName);
         bool isPermanent = false;
-        bool isTemporary = false;
         bool isTokenBased = false;
         uint256 expiry = 0;
         
