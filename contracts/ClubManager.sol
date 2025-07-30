@@ -132,7 +132,7 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
     mapping(address => AutoInheritancePolicy) private _userAutoInheritancePolicy;
     
     // Events
-    event ClubCreated(string domainName, address admin, uint256 domainId);
+    event ClubCreated(string domainName, address admin, uint256 domainId, string name, string symbol, string description);
     event AdminChanged(string domainName, address oldAdmin, address newAdmin);
     event ActiveChanged(string domainName, bool active);
     event MembershipChanged(address user, string domainName, bool status);
@@ -145,6 +145,7 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
     event ClubInheritanceDecision(string domainName, bool accepted);
     event MembershipRemovalAttempted(address user, string domainName, string reason);
     event ClubPassCollectionRegistered(string indexed domainName, address collectionAddress);
+    event ClubMetadataUpdated(string indexed domainName, string name, string symbol, string description, string logoURL, string bannerURL, string baseURI);
     
     IWeb3ClubNFT public nftContract;
     IWeb3ClubRegistry public registryContract;
@@ -164,6 +165,13 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
         address[] members;
         address[] adminTransferHistory;  // Management change history
         mapping(address => bool) memberStatus;
+        // Club metadata
+        string name;        // Club name
+        string symbol;      // Club symbol
+        string description; // Club description
+        string logoURL;     // Logo URL
+        string bannerURL;   // Banner URL
+        string baseURI;     // Base metadata URI
     }
     
     Counters.Counter private _clubIdCounter;
@@ -172,13 +180,7 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
     mapping(address => string[]) private _userClubs;
     mapping(string => mapping(address => bool)) private _clubMembers;
     
-    // NFT transfer record
-    struct NFTTransferRecord {
-        address from;
-        address to;
-        uint256 timestamp;
-    }
-    mapping(uint256 => NFTTransferRecord[]) private _nftTransferHistory;
+
     
     // CLUB permanent membership contract address mapping
     mapping(string => address) private _clubPassCollections;
@@ -203,35 +205,11 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
     // Domain name format constant - keep this field for reference only, no longer used for modifying domain names
     string public constant DOMAIN_SUFFIX = ".web3.club";
     
-    constructor(
-        address _registry,
-        address _passFactory,
-        address _temp,
-        address _token
-    ) Ownable(msg.sender) {
-        if (_registry == address(0) || _passFactory == address(0) || _temp == address(0) || _token == address(0)) revert ZeroAddress();
-        
-        registryContract = IWeb3ClubRegistry(_registry);
-        
-        // Try to get NFT contract address from Registry
-        try registryContract.nftContract() returns (address nftAddress) {
-            if (nftAddress != address(0)) {
-                nftContract = IWeb3ClubNFT(nftAddress);
-            } else {
-                // Note: This is not an error, allowing subsequent setting via syncContractsFromRegistry or setNFTContract
-            }
-        } catch {
-            // Similarly allowed to be set later
-        }
-        
-        clubPassFactory = _passFactory;
-        tempMembershipAddr = _temp;
-        tokenAccessAddr = _token;
+    constructor() Ownable(msg.sender) {
+        // All contract addresses will be set via setAllContracts function after deployment
     }
     
-    /**
-     * @dev Logic for handling NFT reception
-     */
+    // NFT reception logic
     function onERC721Received(
         address, 
         address from, 
@@ -243,12 +221,7 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
             return this.onERC721Received.selector;
         }
         
-        // Record NFT transfer history
-        _nftTransferHistory[tokenId].push(NFTTransferRecord({
-            from: from,
-            to: address(this),
-            timestamp: block.timestamp
-        }));
+
         
         // Get domain name - directly get full domain name from NFT
         string memory domainName;
@@ -274,23 +247,12 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
     }
     
     /**
-     * @dev Prepare club information
+     * @dev Generate default base URI for club
      * @param domainName Domain name prefix
-     * @return name Name
-     * @return symbol Symbol
-     * @return baseURI Base URI
+     * @return Default base URI
      */
-    function _prepareClubInfo(string memory domainName) internal pure returns (string memory name, string memory symbol, string memory baseURI) {
-        // Use domain name prefix as name
-        name = domainName;
-        
-        // Generate symbol from domain name prefix
-        symbol = _getSymbol(domainName);
-        
-        // Use full domain name to build baseURI (add suffix)
-        baseURI = string(abi.encodePacked("https://", domainName, ".web3.club/"));
-        
-        return (name, symbol, baseURI);
+    function _generateDefaultBaseURI(string memory domainName) internal pure returns (string memory) {
+        return string(abi.encodePacked("https://", domainName, ".web3.club/"));
     }
     
     /**
@@ -449,6 +411,43 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
     }
     
     /**
+     * @dev Update club metadata (only club admin can call)
+     */
+    function updateClubMetadata(
+        string memory domainName,
+        string memory name,
+        string memory symbol,
+        string memory description,
+        string memory logoURL,
+        string memory bannerURL,
+        string memory baseURI
+    ) external onlyClubAdmin(domainName) {
+        string memory standardized = standardizeDomainName(domainName);
+        
+        // Check required fields
+        if (bytes(name).length == 0) {
+            revert DomainError("Club name cannot be empty");
+        }
+        if (bytes(symbol).length == 0) {
+            revert DomainError("Club symbol cannot be empty");
+        }
+        
+        // Update metadata
+        _clubs[standardized].name = name;
+        _clubs[standardized].symbol = symbol;
+        _clubs[standardized].description = description;
+        _clubs[standardized].logoURL = logoURL;
+        _clubs[standardized].bannerURL = bannerURL;
+        
+        // Update baseURI if provided, otherwise keep existing
+        if (bytes(baseURI).length > 0) {
+            _clubs[standardized].baseURI = baseURI;
+        }
+        
+        emit ClubMetadataUpdated(standardized, name, symbol, description, logoURL, bannerURL, baseURI);
+    }
+    
+    /**
      * @dev Check if club is initialized
      */
     function isClubInitialized(string memory domainName) public view returns (bool) {
@@ -466,13 +465,45 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
     }
     
     /**
-     * @dev Get club information
+     * @dev Get club basic information
      */
     function getClub(string memory domainName) public view returns (uint256 domainId, address admin, bool active, uint256 memberCount, address[] memory members) {
         string memory standardized = getValidDomainName(domainName);
         if (!isClubInitialized(standardized)) revert DomainError("Club not initialized");
         Club storage club = _clubs[standardized];
         return (club.domainId, club.admin, club.active, club.memberCount, club.members);
+    }
+    
+    /**
+     * @dev Get club detailed information including metadata
+     */
+    function getClubDetails(string memory domainName) public view returns (
+        uint256 domainId,
+        address admin,
+        bool active,
+        uint256 memberCount,
+        string memory name,
+        string memory symbol,
+        string memory description,
+        string memory logoURL,
+        string memory bannerURL,
+        string memory baseURI
+    ) {
+        string memory standardized = getValidDomainName(domainName);
+        if (!isClubInitialized(standardized)) revert DomainError("Club not initialized");
+        Club storage club = _clubs[standardized];
+        return (
+            club.domainId,
+            club.admin,
+            club.active,
+            club.memberCount,
+            club.name,
+            club.symbol,
+            club.description,
+            club.logoURL,
+            club.bannerURL,
+            club.baseURI
+        );
     }
     
     /**
@@ -483,6 +514,8 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
         if (!isClubInitialized(standardized)) revert DomainError("Club not initialized");
         return _clubs[standardized].admin;
     }
+    
+
     
     /**
      * @dev Get all club names for a user
@@ -641,29 +674,7 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
         return true;
     }
     
-    /**
-     * @dev Set user auto inheritance policy
-     */
-    function setUserAutoInheritancePolicy(AutoInheritancePolicy policy) external {
-        _userAutoInheritancePolicy[msg.sender] = policy;
-    }
-    
-    /**
-     * @dev Set global auto inheritance policy
-     */
-    function setAutoInheritancePolicy(AutoInheritancePolicy policy) external onlyOwner {
-        autoInheritancePolicy = policy;
-    }
-    
-    /**
-     * @dev Get user inheritance policy
-     */
-    function getUserAutoInheritancePolicy(address user) public view returns (AutoInheritancePolicy) {
-        if (_userAutoInheritancePolicy[user] != AutoInheritancePolicy.Prompt) {
-            return _userAutoInheritancePolicy[user];
-        }
-        return autoInheritancePolicy;
-    }
+
     
     /**
      * @dev Handle domain expiry
@@ -823,19 +834,77 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
     }
 
     /**
-     * @dev Update membership contract address
-     * @param passFactory PASS card factory contract address
-     * @param temp Temporary membership contract address
-     * @param token Token access contract address
+     * @dev Set all contract addresses at once
+     * @param _registry Registry contract address (optional, use address(0) to skip)
+     * @param _nft NFT contract address (optional, use address(0) to skip)
+     * @param _passFactory PASS card factory contract address (optional, use address(0) to skip)
+     * @param _temp Temporary membership contract address (optional, use address(0) to skip)
+     * @param _token Token access contract address (optional, use address(0) to skip)
      */
-    function updateMembershipContracts(address passFactory, address temp, address token) external onlyOwner {
-        if (passFactory == address(0) || temp == address(0) || token == address(0)) revert ZeroAddress();
+    function setAllContracts(
+        address _registry,
+        address _nft,
+        address _passFactory,
+        address _temp,
+        address _token
+    ) external onlyOwner {
+        if (_registry != address(0)) {
+            registryContract = IWeb3ClubRegistry(_registry);
+            
+            // Try to get NFT contract from registry if NFT address not provided
+            if (_nft == address(0)) {
+                try registryContract.nftContract() returns (address nftAddress) {
+                    if (nftAddress != address(0)) {
+                        nftContract = IWeb3ClubNFT(nftAddress);
+                    }
+                } catch {}
+            }
+        }
         
-        clubPassFactory = passFactory;
-        tempMembershipAddr = temp;
-        tokenAccessAddr = token;
+        if (_nft != address(0)) {
+            nftContract = IWeb3ClubNFT(_nft);
+        }
         
-        emit MembershipContractsUpdated(passFactory, temp, token);
+        if (_passFactory != address(0)) {
+            clubPassFactory = _passFactory;
+        }
+        
+        if (_temp != address(0)) {
+            tempMembershipAddr = _temp;
+        }
+        
+        if (_token != address(0)) {
+            tokenAccessAddr = _token;
+        }
+        
+        emit MembershipContractsUpdated(_passFactory, _temp, _token);
+    }
+    
+    /**
+     * @dev Quick setup for all required contracts (convenience function)
+     */
+    function setupContracts(
+        address _registry,
+        address _passFactory,
+        address _temp,
+        address _token
+    ) external onlyOwner {
+        if (_registry == address(0) || _passFactory == address(0) || _temp == address(0) || _token == address(0)) revert ZeroAddress();
+        
+        // Set contracts directly
+        registryContract = IWeb3ClubRegistry(_registry);
+        clubPassFactory = _passFactory;
+        tempMembershipAddr = _temp;
+        tokenAccessAddr = _token;
+        
+        // Try to get NFT contract from registry
+        try registryContract.nftContract() returns (address nftAddress) {
+            if (nftAddress != address(0)) {
+                nftContract = IWeb3ClubNFT(nftAddress);
+            }
+        } catch {}
+        
+        emit MembershipContractsUpdated(_passFactory, _temp, _token);
     }
 
     /**
@@ -968,40 +1037,7 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
         }
     }
 
-    /**
-     * @dev Safe get domain information
-     * @param domain Domain name
-     * @return isValid Whether valid
-     * @return nftId NFT ID
-     * @return inRegistry Whether in registry
-     */
-    function safeDomainInfo(string memory domain) public view returns (bool isValid, uint256 nftId, bool inRegistry) {
-        // Standardize domain name
-        string memory standardDomain = standardizeDomainName(domain);
-        if (bytes(standardDomain).length == 0) {
-            return (false, 0, false); // Invalid domain
-        }
 
-        // Get NFT ID
-        uint256 tokenId;
-        try nftContract.getTokenId(standardDomain) returns (uint256 id) {
-            tokenId = id;
-        } catch {
-            return (true, 0, false); // Domain valid but failed to get NFT ID
-        }
-
-        // Check if in registry
-        bool registered = false;
-        if (tokenId > 0) {
-            try registryContract.isRegistered(standardDomain) returns (bool isRegistered) {
-                registered = isRegistered;
-            } catch {
-                // Ignore errors
-            }
-        }
-
-        return (true, tokenId, registered);
-    }
         
     /**
      * @dev Validate domain, simplify error handling
@@ -1055,10 +1091,26 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
     /**
      * @dev Create club
      */
-    function createClub(string memory domainName) external whenNotPaused2 returns (bool) {
+    function createClub(
+        string memory domainName,
+        string memory name,
+        string memory symbol,
+        string memory description,
+        string memory logoURL,
+        string memory bannerURL,
+        string memory baseURI
+    ) external whenNotPaused2 returns (bool) {
         // Check input domain name format
         if (bytes(domainName).length == 0) {
             revert DomainError("Empty domain name");
+        }
+        
+        // Check required fields
+        if (bytes(name).length == 0) {
+            revert DomainError("Club name cannot be empty");
+        }
+        if (bytes(symbol).length == 0) {
+            revert DomainError("Club symbol cannot be empty");
         }
 
         // Standardize domain name
@@ -1070,11 +1122,11 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
         // 1. Verify domain ownership
         (uint256 domainId, address owner) = _validateDomain(standardDomain);
         
-        // 2. Prepare club information
-        (string memory name, string memory symbol, string memory baseURI) = _prepareClubInfo(standardDomain);
+        // 2. Use provided club information or generate defaults
+        string memory finalBaseURI = bytes(baseURI).length > 0 ? baseURI : _generateDefaultBaseURI(standardDomain);
         
         // 3. Initialize subcontracts
-        bool success = _initializeSubcontracts(standardDomain, owner, name, symbol, baseURI);
+        bool success = _initializeSubcontracts(standardDomain, owner, name, symbol, finalBaseURI);
         
         // 4. Update main contract state
         if (success) {
@@ -1087,13 +1139,21 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
             _clubs[standardDomain].adminTransferHistory = new address[](0);
             _clubs[standardDomain].adminTransferHistory.push(owner);
             
+            // Store club metadata
+            _clubs[standardDomain].name = name;
+            _clubs[standardDomain].symbol = symbol;
+            _clubs[standardDomain].description = description;
+            _clubs[standardDomain].logoURL = logoURL;
+            _clubs[standardDomain].bannerURL = bannerURL;
+            _clubs[standardDomain].baseURI = finalBaseURI;
+            
             _domainIdToName[domainId] = standardDomain;
             
             // Add user as club member
             _clubMembers[standardDomain][owner] = true;
             _userClubs[owner].push(standardDomain);
             
-            emit ClubCreated(standardDomain, owner, domainId);
+            emit ClubCreated(standardDomain, owner, domainId, name, symbol, description);
             emit MembershipChanged(owner, standardDomain, true);
             
             return true;
@@ -1102,41 +1162,21 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
         }
     }
 
-    /**
-     * @dev Directly set NFT contract address (only used when failed to get from Registry)
-     */
-    function setNFTContract(address _nft) external onlyOwner {
-        require(_nft != address(0), "Zero address not allowed");
-        nftContract = IWeb3ClubNFT(_nft);
-    }
+
 
     /**
      * @dev Decide whether to inherit the membership of the previous club
-     * @param domainName Domain name
-     * @param accept Whether to accept inheritance
      */
     function decideClubInheritance(string memory domainName, bool accept) external onlyDomainOwner(domainName) {
         string memory standardized = standardizeDomainName(domainName);
         
-        // Check if in transition period
         DomainTransition storage transition = _domainTransitions[standardized];
         if (transition.status != DomainTransitionStatus.Pending) revert DomainError("Domain is not in pending transition");
         
-        // Regardless of whether to accept or not, keep member and activate club
         _clubs[standardized].active = true;
         transition.status = DomainTransitionStatus.Accepted;
         
-        // Emit event notification
         emit ClubInheritanceDecision(standardized, accept);
-    }
-
-    /**
-     * @dev Set Registry contract address
-     * @param _registryContract Registry contract address
-     */
-    function setRegistryContract(address _registryContract) external onlyOwner {
-        require(_registryContract != address(0), "Invalid registry address");
-        registryContract = IWeb3ClubRegistry(_registryContract);
     }
     
     /**
@@ -1160,92 +1200,9 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
         }
     }
 
-    /**
-     * @dev Check contract initialization status
-     * @return registrySet Registry contract is set
-     * @return nftSet NFT contract is set
-     * @return registryAddr Registry contract address
-     * @return nftAddr NFT contract address
-     */
-    function checkInitialization() external view returns (
-        bool registrySet,
-        bool nftSet,
-        address registryAddr,
-        address nftAddr
-    ) {
-        registrySet = address(registryContract) != address(0);
-        nftSet = address(nftContract) != address(0);
-        registryAddr = address(registryContract);
-        nftAddr = address(nftContract);
-        
-        return (registrySet, nftSet, registryAddr, nftAddr);
-    }
 
-    /**
-     * @dev Sync user membership
-     * @param user User address
-     * @param domainName Club name
-     * @return Whether user is member
-     */
-    function syncMembership(address user, string memory domainName) external returns (bool) {
-        // Standardize domain name
-        string memory standardDomain = standardizeDomainName(domainName);
-        if (bytes(standardDomain).length == 0) revert DomainError("Invalid domain name");
-        
-        // Verify club is initialized
-        if (!isClubInitialized(standardDomain)) revert DomainError("Club not initialized");
-        
-        bool hasMembership = false;
-        
-        // 1. Check temporary membership contract
-        try IMembershipContract(tempMembershipAddr).hasActiveMembership(standardDomain, user) returns (bool hasTemp) {
-            if (hasTemp) {
-                hasMembership = true;
-            }
-        } catch {
-            // Ignore errors
-        }
-        
-        // 2. Check based on token access
-        if (!hasMembership) {
-            try ITokenBasedAccess(tokenAccessAddr).hasActiveMembership(standardDomain, user) returns (bool hasToken) {
-                if (hasToken) {
-                    hasMembership = true;
-                }
-            } catch {
-                // Ignore errors
-            }
-        }
-        
-        // Update membership status
-        if (hasMembership) {
-            this.updateMembership(user, standardDomain, true);
-        }
-        
-        return hasMembership;
-    }
-    
-    /**
-     * @dev Check user token membership
-     * @param user User address
-     * @param domainName Club name
-     * @return Whether user has membership
-     */
-    function checkTokenMembership(address user, string memory domainName) external returns (bool) {
-        // Standardize domain name
-        string memory standardDomain = standardizeDomainName(domainName);
-        if (bytes(standardDomain).length == 0) revert DomainError("Invalid domain name");
-        
-        // Verify club is initialized
-        if (!isClubInitialized(standardDomain)) revert DomainError("Club not initialized");
-        
-        // Call TokenBasedAccess check function
-        try ITokenBasedAccess(tokenAccessAddr).checkAndUpdateAccess(standardDomain, user) returns (bool hasAccess) {
-            return hasAccess;
-        } catch {
-            return false;
-        }
-    }
+
+
     
     /**
      * @dev Record CLUB permanent membership contract address
@@ -1279,87 +1236,7 @@ contract ClubManager is Ownable, Pausable, IERC721Receiver {
         return _clubPassCollections[standardDomain];
     }
 
-    /**
-     * @dev Set PASS card factory contract address
-     * @param _passFactory New factory contract address
-     */
-    function setClubPassFactory(address _passFactory) external onlyOwner {
-        require(_passFactory != address(0), "Zero address not allowed");
-        clubPassFactory = _passFactory;
-    }
 
-    /**
-     * @dev Debug function, used to check address settings required for creating CLUB
-     * @return registry Registry contract address
-     * @return nft NFT contract address
-     * @return passFactory PASS factory contract address
-     * @return temp Temporary membership contract address
-     * @return token Token access contract address
-     * @return thisAddr Current contract address
-     */
-    function checkAddressesConfig() external view returns (
-        address registry,
-        address nft,
-        address passFactory,
-        address temp,
-        address token,
-        address thisAddr
-    ) {
-        return (
-            address(registryContract),
-            address(nftContract),
-            clubPassFactory,
-            tempMembershipAddr,
-            tokenAccessAddr,
-            address(this)
-        );
-    }
-    
-    /**
-     * @dev Debug function, used to check domain processing logic
-     */
-    function debugDomainProcessing(string memory domainName) external pure returns (
-        string memory standardized,
-        bool isValid
-    ) {
-        standardized = standardizeDomainName(domainName);
-        isValid = bytes(standardized).length > 0;
-        return (standardized, isValid);
-    }
-    
-    /**
-     * @dev Debug function, used to check domain NFT verification process
-     */
-    function debugDomainValidation(string memory domainName) external view returns (
-        string memory standardized,
-        uint256 domainId,
-        address owner,
-        bool isRegistered,
-        bool isActive,
-        bool isThisAddr
-    ) {
-        standardized = standardizeDomainName(domainName);
-        
-        // Try to get NFT ID
-        try nftContract.getTokenId(standardized) returns (uint256 tokenId) {
-            domainId = tokenId;
-            
-            // Try to get owner
-            try nftContract.ownerOf(tokenId) returns (address _owner) {
-                owner = _owner;
-                isThisAddr = msg.sender == _owner;
-            } catch {}
-            
-            // Check domain status
-            try registryContract.isRegistered(standardized) returns (bool _isRegistered) {
-                isRegistered = _isRegistered;
-            } catch {}
-            
-            try registryContract.getDomainStatus(standardized) returns (IWeb3ClubRegistry.DomainStatus status) {
-                isActive = status == IWeb3ClubRegistry.DomainStatus.Active;
-            } catch {}
-        } catch {}
-        
-        return (standardized, domainId, owner, isRegistered, isActive, isThisAddr);
-    }
+
+
 }
